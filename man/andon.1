@@ -1,0 +1,480 @@
+.TH ANDON 1 "2026-03-17" "andon 0.1.0" "User Commands"
+.
+.SH NAME
+andon \- signal-routing daemon
+.
+.SH SYNOPSIS
+.B andon
+.RI [ OPTIONS ]
+.I config.toml
+.
+.SH DESCRIPTION
+.B andon
+reads a TOML configuration file and starts a
+signal-routing pipeline.
+Binary
+.RB ( On / Off )
+signals flow from
+.I sources
+through optional logic
+.I nodes
+to
+.IR sinks .
+.PP
+On startup:
+.IP 1. 4
+All Meross alarm sinks are turned off.
+.IP 2. 4
+All sink connections are established (login, device
+lookup, \&etc.).
+.IP 3. 4
+Sources begin emitting.
+.PP
+On receipt of
+.B SIGINT
+or
+.BR SIGTERM ,
+all Meross alarm sinks are turned off and the process
+exits.
+.
+.SH OPTIONS
+.TP
+.B \-h\fR,\fB \-\-help
+Print a short usage summary and exit.
+.TP
+.B \-V\fR,\fB \-\-version
+Print the version string and exit.
+.
+.SH CONFIGURATION FILE
+The configuration file is TOML.
+It contains up to three arrays of tables:
+.BR [[source]] ,
+.BR [[node]] ,
+and
+.BR [[sink]] .
+All three are optional.
+.PP
+Every entry requires a
+.B type
+field (selects the implementation) and a
+.B name
+field (unique across all sources, nodes, and sinks).
+Sources and nodes also require a
+.B sinks
+array that lists the names of downstream nodes or sinks.
+.
+.SS Sources
+.
+.TP
+.B type = \(dqurl\(dq
+Poll an HTTP endpoint on a schedule.
+Emits
+.B On
+when a check fails (connection error, non-2xx status, or
+pattern mismatch);
+.B Off
+when it passes.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B url
+URL to poll (required).
+.TP
+.B interval
+Mean time between polls; see
+.B DURATIONS
+(required).
+.TP
+.B sinks
+Downstream names (required).
+.TP
+.B timeout
+Per-request timeout; default
+.B 10s
+(optional).
+.TP
+.B stddev
+Standard deviation for Gaussian jitter applied to
+.BR interval .
+Each inter-poll sleep is sampled from
+.RI Normal( interval , stddev ),
+clamped to zero (optional).
+.TP
+.B pattern
+Rust regular expression.
+The response body is tested with
+.I is_match
+(not a full-string match).
+If the body does not match, the signal is
+.B On
+(optional).
+.RE
+.
+.TP
+.B type = \(dqcron\(dq
+Emit
+.B On
+at times matching a cron schedule and
+.B Off
+after a fixed duration.
+Times are interpreted in the local timezone.
+If the
+.B On
+period has not ended when the next scheduled time
+arrives, the current period runs to completion first.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B cron
+Six-field cron expression in local time:
+.I "sec min hour day-of-month month day-of-week"
+(required).
+Standard wildcards
+.RB ( * ),
+ranges
+.RB ( 1\-5 ),
+and step values
+.RB ( */2 )
+are supported.
+.TP
+.B duration
+How long the signal stays
+.BR On ;
+see
+.B DURATIONS
+(required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.SS Nodes
+.PP
+Connect a source to a node the same way you connect it
+to a sink: list the node's
+.B name
+in the source's
+.B sinks
+array.
+All nodes track each input source independently (keyed
+by name) and only forward a signal when their output
+changes.
+.
+.TP
+.B type = \(dqnot\(dq
+Logic NOT.
+Emits
+.B On
+when
+.I all
+inputs are
+.BR Off ;
+.B Off
+when
+.I any
+input is
+.BR On .
+Emits
+.B On
+immediately at startup (vacuous case: no inputs yet).
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.TP
+.B type = \(dqand\(dq
+Logic AND.
+Emits
+.B On
+when
+.I all
+inputs are
+.BR On ;
+.B Off
+when
+.I any
+input is
+.BR Off .
+Does not emit until the first message is received.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.TP
+.B type = \(dqor\(dq
+Logic OR.
+Emits
+.B On
+when
+.I any
+input is
+.BR On ;
+.B Off
+when
+.I all
+inputs are
+.BR Off .
+Does not emit until the first message is received.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.TP
+.B type = \(dqxor\(dq
+Logic XOR.
+Emits
+.B On
+when an
+.I odd
+number of inputs are
+.BR On ;
+.B Off
+otherwise.
+Does not emit until the first message is received.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.TP
+.B type = \(dqdelay\(dq
+Turn-on delay gate.
+Emits
+.B On
+only after at least one input has been continuously
+.B On
+for the configured delay.
+Emits
+.B Off
+immediately when
+.I all
+inputs go
+.BR Off .
+If any input goes
+.B Off
+before the delay elapses the timer is cancelled and
+.B On
+is never emitted for that period.
+.RS
+.TP
+.B name
+Unique name (required).
+.TP
+.B delay
+Minimum continuous
+.B On
+duration before output fires; see
+.B DURATIONS
+(required).
+.TP
+.B sinks
+Downstream names (required).
+.RE
+.
+.SS Sinks
+.
+.TP
+.B type = \(dqlog\(dq
+Write every signal change to standard error via the
+tracing subscriber.
+.RS
+.TP
+.B name
+Unique name (required).
+.RE
+.
+.TP
+.B type = \(dqmeross\(dq
+Control a Meross smart plug via the Meross cloud API.
+Turns the plug
+.B on
+when any connected source is
+.BR On ;
+turns it
+.B off
+when all connected sources are
+.BR Off .
+Only issues a cloud command when the desired state
+changes.
+.PP
+.RS
+Meross sinks are treated as
+.IR alarms :
+they are turned off unconditionally at startup and again
+at shutdown, regardless of the current signal state.
+.TP
+.B name
+Unique name (required).
+.TP
+.B device
+Device name exactly as shown in the Meross app
+(required).
+.TP
+.B email
+Meross account e-mail address (required).
+.TP
+.B password
+Meross account password in plaintext (required).
+Restrict read access to the config file with
+.BR "chmod 600" .
+.TP
+.B region
+API region:
+.BR eu ,
+.BR us ,
+or
+.B ap
+(default
+.BR us ),
+or a full HTTPS base URL for a non-standard endpoint
+(optional).
+.TP
+.B channel
+Relay channel index; 0 is the main outlet on
+single-outlet devices (default
+.BR 0 )
+(optional).
+.RE
+.
+.SS Durations
+Duration strings are parsed by the
+.I humantime
+library.
+Examples:
+.RS
+.TS
+l l.
+\fB30s\fR	30 seconds
+\fB1m\fR	1 minute
+\fB1m30s\fR	90 seconds
+\fB2h\fR	2 hours
+\fB1h30m\fR	90 minutes
+.TE
+.RE
+.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls log verbosity using the
+.I tracing-subscriber
+filter syntax.
+The default level is
+.BR debug .
+.PP
+.RS
+Examples:
+.PP
+.RS
+.EX
+RUST_LOG=info  andon config.toml
+RUST_LOG=warn  andon config.toml
+RUST_LOG=andon=info,andon::sources::url=debug  andon config.toml
+.EE
+.RE
+.RE
+.
+.SH SIGNALS
+.TP
+.B SIGINT\fR,\fB SIGTERM
+Initiate graceful shutdown: turn off all alarm sinks
+then exit.
+.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal exit (all tasks completed or shutdown signal received).
+.TP
+.B 1
+Configuration error, missing sink name, or startup
+failure.
+.
+.SH EXAMPLES
+.SS Simple health-check alarm
+Turn on a plug when a health endpoint starts failing.
+.PP
+.EX
+[[source]]
+type     = "url"
+name     = "api"
+url      = "https://api.example.com/health"
+interval = "30s"
+sinks    = ["alarm"]
+
+[[sink]]
+type     = "meross"
+name     = "alarm"
+device   = "Alarm Light"
+email    = "user@example.com"
+password = "s3cr3t"
+region   = "eu"
+.EE
+.
+.SS On-call window with debounce
+Fire only during business hours and only after the
+service has been down for 30 seconds continuously.
+.PP
+.EX
+[[source]]
+type     = "url"
+name     = "api"
+url      = "https://api.example.com/health"
+interval = "30s"
+stddev   = "5s"
+timeout  = "5s"
+pattern  = "\e"status\e":\e"ok\e""
+sinks    = ["alarm-gate"]
+
+[[source]]
+type     = "cron"
+name     = "on-call"
+cron     = "0 0 8 * * Mon-Fri"
+duration = "10h"
+sinks    = ["alarm-gate"]
+
+[[node]]
+type  = "and"
+name  = "alarm-gate"
+sinks = ["debounce"]
+
+[[node]]
+type  = "delay"
+name  = "debounce"
+delay = "30s"
+sinks = ["alarm"]
+
+[[sink]]
+type     = "meross"
+name     = "alarm"
+device   = "Alarm Light"
+email    = "user@example.com"
+password = "s3cr3t"
+region   = "eu"
+.EE
+.
+.SH SEE ALSO
+.BR systemd.unit (5),
+.BR crontab (5),
+.BR chmod (1)
