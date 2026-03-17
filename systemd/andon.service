@@ -1,0 +1,30 @@
+[Unit]
+Description=andon signal-routing daemon
+Documentation=man:andon(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/andon /etc/andon.toml
+Restart=on-failure
+RestartSec=5s
+
+# Unprivileged execution
+DynamicUser=yes
+SupplementaryGroups=
+
+# Filesystem restrictions
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/andon.toml
+PrivateTmp=yes
+
+# Misc hardening
+NoNewPrivileges=yes
+LockPersonality=yes
+PrivateDevices=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

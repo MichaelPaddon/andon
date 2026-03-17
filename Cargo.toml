@@ -2,6 +2,31 @@
 name = "andon"
 version = "0.1.0"
 edition = "2024"
+description = "Signal-routing daemon"
+authors = ["Michael Paddon <michael@paddon.org>"]
+license = "MIT"
+
+[package.metadata.deb]
+maintainer = "Michael Paddon <michael@paddon.org>"
+copyright = "2026 Michael Paddon"
+section = "net"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+andon routes binary (On/Off) signals from sources \
+through optional logic nodes to sinks. \
+Sources include HTTP health checks and cron schedules. \
+Nodes implement AND, OR, XOR, NOT, and delay logic. \
+Sinks include Meross smart-plug control and logging.\
+"""
+systemd-units = {}
+assets = [
+  ["target/release/andon", "usr/bin/andon", "755"],
+  ["man/andon.1",
+   "usr/share/man/man1/andon.1", "644"],
+  ["README.md",
+   "usr/share/doc/andon/README.md", "644"],
+]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
