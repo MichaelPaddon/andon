@@ -121,3 +121,49 @@ impl Source for XorSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nodes::testutil::Harness;
+
+    fn harness() -> Harness {
+        let (sink, src) =
+            Xor::new("xor", vec![]).split();
+        Harness::start(sink, src)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn odd_number_of_on_inputs_emits_on() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn even_number_of_on_inputs_emits_off() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        h.send("b", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::Off);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_back_to_odd_emits_on() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        h.send("b", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::Off);
+        h.send("a", Signal::Off).await;
+        assert_eq!(h.recv().await, Signal::On);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn all_off_is_not_emitted_initially() {
+        let mut h = harness();
+        h.send("a", Signal::Off).await;
+        h.assert_silent().await;
+    }
+}

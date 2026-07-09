@@ -154,3 +154,121 @@ impl Default for Bus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::task::JoinHandle;
+
+    use super::*;
+    use crate::Sink as SinkTrait;
+
+    /// Emits a fixed sequence of signals, then idles so
+    /// the bus relay task stays alive.
+    struct SeqSource {
+        name: String,
+        sinks: Vec<String>,
+        seq: Vec<Signal>,
+    }
+
+    impl Source for SeqSource {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn sink_names(&self) -> &[String] {
+            &self.sinks
+        }
+
+        fn start(
+            self: Box<Self>,
+            tx: mpsc::Sender<Signal>,
+        ) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                for sig in self.seq {
+                    if tx.send(sig).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }
+    }
+
+    /// Forwards every received message to a test-side
+    /// channel for assertions.
+    struct CaptureSink {
+        name: String,
+        out: mpsc::Sender<Message>,
+    }
+
+    impl SinkTrait for CaptureSink {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn start(
+            self: Box<Self>,
+            mut rx: mpsc::Receiver<Message>,
+        ) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    if self.out.send(msg).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_sink_names_are_reported() {
+        let mut bus = Bus::new();
+        bus.add_source(Box::new(SeqSource {
+            name: "s".into(),
+            sinks: vec!["nope".into()],
+            seq: vec![],
+        }));
+
+        let missing = bus
+            .run()
+            .await
+            .err()
+            .expect("run should fail");
+        assert_eq!(missing, vec!["nope".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn messages_are_tagged_and_fanned_out() {
+        let (out_a, mut rx_a) = mpsc::channel(16);
+        let (out_b, mut rx_b) = mpsc::channel(16);
+
+        let mut bus = Bus::new();
+        bus.add_sink(Box::new(CaptureSink {
+            name: "a".into(),
+            out: out_a,
+        }));
+        bus.add_sink(Box::new(CaptureSink {
+            name: "b".into(),
+            out: out_b,
+        }));
+        bus.add_source(Box::new(SeqSource {
+            name: "src".into(),
+            sinks: vec!["a".into(), "b".into()],
+            seq: vec![Signal::On, Signal::Off],
+        }));
+
+        let (_handles, _shutdown) =
+            bus.run().await.expect("run should succeed");
+
+        for rx in [&mut rx_a, &mut rx_b] {
+            let m1 =
+                rx.recv().await.expect("first message");
+            assert_eq!(m1.source, "src");
+            assert_eq!(m1.signal, Signal::On);
+
+            let m2 =
+                rx.recv().await.expect("second message");
+            assert_eq!(m2.signal, Signal::Off);
+        }
+    }
+}

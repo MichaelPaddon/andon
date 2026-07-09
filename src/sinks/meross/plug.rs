@@ -7,6 +7,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, error, info};
 
 use super::{MerossClient, Region};
+use crate::logging::ErrorChain;
 use crate::{Alarm, Message, Signal, Sink};
 
 // ── shared connect helper ─────────────────────────────
@@ -29,7 +30,7 @@ async fn connect(
             Err(e) => {
                 error!(
                     sink  = %name,
-                    error = %e,
+                    error = %ErrorChain(e.as_ref()),
                     "login failed",
                 );
                 return None;
@@ -42,7 +43,7 @@ async fn connect(
             Err(e) => {
                 error!(
                     sink  = %name,
-                    error = %e,
+                    error = %ErrorChain(e.as_ref()),
                     "devList failed",
                 );
                 return None;
@@ -198,7 +199,7 @@ impl Sink for MerossSink {
                     {
                         error!(
                             sink  = %self.name,
-                            error = %e,
+                            error = %ErrorChain(e.as_ref()),
                             "toggle failed",
                         );
                     }
@@ -253,7 +254,7 @@ impl Alarm for MerossSink {
                 Err(e) => {
                     error!(
                         sink  = %self.name,
-                        error = %e,
+                        error = %ErrorChain(e.as_ref()),
                         "alarm clear failed",
                     );
                 }

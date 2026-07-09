@@ -4,6 +4,7 @@ use regex::Regex;
 use reqwest::Client;
 use tracing::{debug, warn};
 
+use crate::logging::ErrorChain;
 use crate::probe::{Probe, ProbeSchedule};
 use crate::Signal;
 
@@ -110,7 +111,15 @@ async fn run_check(
 ) -> Signal {
     let resp = match client.get(url).send().await {
         Err(e) => {
-            warn!(source = name, error = %e, "request failed");
+            // ErrorChain surfaces the root cause (DNS,
+            // refused, timeout), which reqwest's Display
+            // alone omits.
+            warn!(
+                source = name,
+                url,
+                error  = %ErrorChain(&e),
+                "request failed",
+            );
             return Signal::On;
         }
         Ok(r) => r,
@@ -118,7 +127,12 @@ async fn run_check(
 
     let status = resp.status();
     if !status.is_success() {
-        warn!(source = name, %status, "unexpected status");
+        warn!(
+            source = name,
+            url,
+            %status,
+            "unexpected status",
+        );
         return Signal::On;
     }
 
@@ -127,8 +141,9 @@ async fn run_check(
         Some(pat) => match resp.text().await {
             Err(e) => {
                 warn!(
-                    source  = name,
-                    error   = %e,
+                    source = name,
+                    url,
+                    error  = %ErrorChain(&e),
                     "failed to read body",
                 );
                 Signal::On
@@ -139,6 +154,7 @@ async fn run_check(
                 } else {
                     warn!(
                         source  = name,
+                        url,
                         pattern = %pat,
                         "body did not match pattern",
                     );
@@ -146,5 +162,130 @@ async fn run_check(
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    /// Serve one canned HTTP response on an ephemeral
+    /// localhost port and return the URL to fetch.
+    async fn serve_once(response: &'static str) -> String {
+        let listener =
+            TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind ephemeral port");
+        let addr = listener
+            .local_addr()
+            .expect("local addr");
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener
+                .accept()
+                .await
+                .expect("accept");
+            // Drain the request head; enough for a
+            // canned exchange.
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(response.as_bytes())
+                .await;
+        });
+
+        format!("http://{addr}/")
+    }
+
+    fn client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build client")
+    }
+
+    fn http_ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\n\
+             content-length: {}\r\n\
+             connection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        )
+    }
+
+    #[tokio::test]
+    async fn success_yields_off() {
+        let resp = http_ok("hello").leak();
+        let url = serve_once(resp).await;
+        let sig =
+            run_check("t", &client(), &url, None).await;
+        assert_eq!(sig, Signal::Off);
+    }
+
+    #[tokio::test]
+    async fn error_status_yields_on() {
+        let url = serve_once(
+            "HTTP/1.1 500 Internal Server Error\r\n\
+             content-length: 0\r\n\
+             connection: close\r\n\r\n",
+        )
+        .await;
+        let sig =
+            run_check("t", &client(), &url, None).await;
+        assert_eq!(sig, Signal::On);
+    }
+
+    #[tokio::test]
+    async fn connection_failure_yields_on() {
+        // Bind then drop, so the port is known-dead.
+        let listener =
+            TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind ephemeral port");
+        let url = format!(
+            "http://{}/",
+            listener.local_addr().expect("local addr")
+        );
+        drop(listener);
+
+        let sig =
+            run_check("t", &client(), &url, None).await;
+        assert_eq!(sig, Signal::On);
+    }
+
+    #[tokio::test]
+    async fn matching_pattern_yields_off() {
+        let resp = http_ok("status: healthy").leak();
+        let url = serve_once(resp).await;
+        let pat =
+            Regex::new("healthy").expect("valid regex");
+        let sig = run_check(
+            "t",
+            &client(),
+            &url,
+            Some(&pat),
+        )
+        .await;
+        assert_eq!(sig, Signal::Off);
+    }
+
+    #[tokio::test]
+    async fn non_matching_pattern_yields_on() {
+        let resp = http_ok("status: degraded").leak();
+        let url = serve_once(resp).await;
+        let pat =
+            Regex::new("healthy").expect("valid regex");
+        let sig = run_check(
+            "t",
+            &client(),
+            &url,
+            Some(&pat),
+        )
+        .await;
+        assert_eq!(sig, Signal::On);
     }
 }

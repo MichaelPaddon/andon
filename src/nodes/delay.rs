@@ -178,3 +178,58 @@ impl Source for DelaySource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nodes::testutil::Harness;
+
+    const DELAY: Duration = Duration::from_secs(30);
+
+    fn harness() -> Harness {
+        let (sink, src) =
+            Delay::new("delay", DELAY, vec![]).split();
+        Harness::start(sink, src)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_is_delayed() {
+        let mut h = harness();
+        let start = Instant::now();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        // The paused clock advances exactly as far as
+        // the armed timer requires.
+        assert!(start.elapsed() >= DELAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn off_before_delay_cancels_timer() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        h.send("a", Signal::Off).await;
+        // assert_silent waits out (paused) time well
+        // past the delay, so a leaked timer would
+        // surface as an unexpected On here.
+        h.assert_silent().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn off_is_immediate() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+
+        let start = Instant::now();
+        h.send("a", Signal::Off).await;
+        assert_eq!(h.recv().await, Signal::Off);
+        assert!(start.elapsed() < DELAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_off_is_not_emitted() {
+        let mut h = harness();
+        h.send("a", Signal::Off).await;
+        h.assert_silent().await;
+    }
+}

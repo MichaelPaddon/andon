@@ -22,9 +22,12 @@ struct Args {
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
+            // Quiet by default: transitions at INFO,
+            // failures at WARN. Set RUST_LOG=debug to
+            // see every check and unchanged signal.
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| {
-                    EnvFilter::new("debug")
+                    EnvFilter::new("info")
                 }),
         )
         .init();

@@ -101,3 +101,40 @@ impl Source for CronSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_spec_is_a_helpful_error() {
+        let err = CronSource::new(
+            "c",
+            "bogus",
+            Duration::from_secs(1),
+            vec![],
+        )
+        .err()
+        .expect("bogus spec should fail");
+        assert!(err.contains("invalid cron spec"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fires_on_then_off() {
+        // Every second, on for one second. The paused
+        // clock auto-advances through the sleeps.
+        let src = CronSource::new(
+            "c",
+            "* * * * * *",
+            Duration::from_secs(1),
+            vec![],
+        )
+        .expect("valid spec");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        Box::new(src).start(tx);
+
+        assert_eq!(rx.recv().await, Some(Signal::On));
+        assert_eq!(rx.recv().await, Some(Signal::Off));
+    }
+}

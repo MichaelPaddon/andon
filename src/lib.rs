@@ -1,6 +1,7 @@
 pub mod alarm;
 mod bus;
 pub mod config;
+pub mod logging;
 pub mod nodes;
 pub mod probe;
 pub mod sinks;

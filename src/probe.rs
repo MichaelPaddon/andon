@@ -96,3 +96,91 @@ impl<P: Probe> Source for P {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_schedule_returns_interval() {
+        let s =
+            ProbeSchedule::new(Duration::from_secs(60));
+        assert_eq!(
+            s.next_sleep(),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn jittered_schedule_varies_and_never_negative() {
+        let s =
+            ProbeSchedule::new(Duration::from_secs(60))
+                .with_stddev(Duration::from_secs(60));
+        let samples: Vec<Duration> =
+            (0..100).map(|_| s.next_sleep()).collect();
+
+        // Clamped at zero, never negative (Duration
+        // enforces that; the clamp keeps from_secs_f64
+        // from panicking on negative samples).
+        // With stddev == interval the odds of 100
+        // identical samples are nil, so this catches
+        // jitter silently not being applied.
+        assert!(
+            samples.windows(2).any(|w| w[0] != w[1]),
+            "jitter produced identical samples"
+        );
+    }
+
+    /// A probe that emits a fixed sequence of signals.
+    struct SeqProbe {
+        name: String,
+        sinks: Vec<String>,
+        schedule: ProbeSchedule,
+        seq: Vec<Signal>,
+        next: usize,
+    }
+
+    impl Probe for SeqProbe {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn sink_names(&self) -> &[String] {
+            &self.sinks
+        }
+
+        fn schedule(&self) -> &ProbeSchedule {
+            &self.schedule
+        }
+
+        async fn check(&mut self) -> Signal {
+            let sig = self.seq[self.next % self.seq.len()];
+            self.next += 1;
+            sig
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_emits_every_check_result() {
+        let probe = SeqProbe {
+            name: "p".into(),
+            sinks: vec![],
+            schedule: ProbeSchedule::new(
+                Duration::from_secs(60),
+            ),
+            seq: vec![Signal::Off, Signal::On],
+            next: 0,
+        };
+
+        let (tx, mut rx) = mpsc::channel(16);
+        Box::new(probe).start(tx);
+
+        // First check fires immediately, later ones on
+        // the (paused, auto-advanced) interval. Levels
+        // are re-emitted even when unchanged; dedup is
+        // a sink concern.
+        assert_eq!(rx.recv().await, Some(Signal::Off));
+        assert_eq!(rx.recv().await, Some(Signal::On));
+        assert_eq!(rx.recv().await, Some(Signal::Off));
+    }
+}

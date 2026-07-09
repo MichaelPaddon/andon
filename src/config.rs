@@ -253,3 +253,115 @@ fn build_sink(
 fn parse_dur(s: &str) -> Result<Duration> {
     humantime::parse_duration(s).map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_config_parses_and_builds() {
+        let toml = r#"
+            [[source]]
+            type = "url"
+            name = "web"
+            url = "https://example.org/"
+            interval = "1m"
+            timeout = "5s"
+            stddev = "10s"
+            pattern = "ok"
+            sinks = ["gate"]
+
+            [[source]]
+            type = "cron"
+            name = "nightly"
+            cron = "0 0 3 * * *"
+            duration = "10m"
+            sinks = ["gate"]
+
+            [[node]]
+            type = "or"
+            name = "gate"
+            sinks = ["log"]
+
+            [[sink]]
+            type = "log"
+            name = "log"
+        "#;
+
+        let config = Config::from_str(toml)
+            .expect("config should parse");
+        config.build().expect("config should build");
+    }
+
+    #[test]
+    fn empty_config_is_valid() {
+        Config::from_str("")
+            .expect("empty config should parse")
+            .build()
+            .expect("empty config should build");
+    }
+
+    #[test]
+    fn bad_duration_is_rejected() {
+        let toml = r#"
+            [[source]]
+            type = "url"
+            name = "web"
+            url = "https://example.org/"
+            interval = "soon"
+            sinks = []
+        "#;
+        let config =
+            Config::from_str(toml).expect("parses");
+        assert!(config.build().is_err());
+    }
+
+    #[test]
+    fn bad_cron_spec_is_rejected() {
+        let toml = r#"
+            [[source]]
+            type = "cron"
+            name = "c"
+            cron = "not a cron spec"
+            duration = "1m"
+            sinks = []
+        "#;
+        let config =
+            Config::from_str(toml).expect("parses");
+        let err = config
+            .build()
+            .err()
+            .expect("build should fail");
+        assert!(
+            err.to_string()
+                .contains("invalid cron spec"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn bad_regex_is_rejected() {
+        let toml = r#"
+            [[source]]
+            type = "url"
+            name = "web"
+            url = "https://example.org/"
+            interval = "1m"
+            pattern = "("
+            sinks = []
+        "#;
+        let config =
+            Config::from_str(toml).expect("parses");
+        assert!(config.build().is_err());
+    }
+
+    #[test]
+    fn unknown_type_is_rejected_at_parse() {
+        let toml = r#"
+            [[sink]]
+            type = "pager"
+            name = "p"
+        "#;
+        assert!(Config::from_str(toml).is_err());
+    }
+}

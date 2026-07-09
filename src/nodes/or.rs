@@ -120,3 +120,54 @@ impl Source for OrSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nodes::testutil::Harness;
+
+    fn harness() -> Harness {
+        let (sink, src) =
+            Or::new("or", vec![]).split();
+        Harness::start(sink, src)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_off_is_not_emitted() {
+        let mut h = harness();
+        h.send("a", Signal::Off).await;
+        h.assert_silent().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn any_on_emits_on() {
+        let mut h = harness();
+        h.send("a", Signal::Off).await;
+        h.send("b", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn off_only_when_all_inputs_off() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        h.send("b", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+
+        // One input dropping is not enough.
+        h.send("a", Signal::Off).await;
+        h.assert_silent().await;
+
+        h.send("b", Signal::Off).await;
+        assert_eq!(h.recv().await, Signal::Off);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeats_are_not_re_emitted() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        h.send("a", Signal::On).await;
+        h.assert_silent().await;
+    }
+}

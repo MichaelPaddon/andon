@@ -120,3 +120,51 @@ impl Source for AndSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nodes::testutil::Harness;
+
+    fn harness() -> Harness {
+        let (sink, src) =
+            And::new("and", vec![]).split();
+        Harness::start(sink, src)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn all_known_inputs_on_emits_on() {
+        let mut h = harness();
+        // The gate only knows about inputs it has seen,
+        // so a single On input satisfies "all on".
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn any_off_forces_off() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        h.send("b", Signal::Off).await;
+        assert_eq!(h.recv().await, Signal::Off);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovers_when_all_inputs_return_on() {
+        let mut h = harness();
+        h.send("a", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+        h.send("b", Signal::Off).await;
+        assert_eq!(h.recv().await, Signal::Off);
+        h.send("b", Signal::On).await;
+        assert_eq!(h.recv().await, Signal::On);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_off_is_not_emitted() {
+        let mut h = harness();
+        h.send("a", Signal::Off).await;
+        h.assert_silent().await;
+    }
+}
